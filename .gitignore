@@ -1,0 +1,43 @@
+# Arduino IDE build files
+*.o
+*.d
+*.eep
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.lss
+*.sym
+*.a
+
+# Arduino IDE temporary files
+*.tmp
+*~
+._*
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+.history/
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# macOS specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows specific files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Development build directories
+build/
+bin/
