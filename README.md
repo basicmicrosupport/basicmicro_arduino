@@ -188,7 +188,7 @@ void loop() {
 
 The library provides many more functions for advanced control and configuration. See the header file or refer to the examples folder for more details on specific functions.
 
-For complete documentation of all commands and protocols, please refer to the [official Basicmicro documentation](https://www.basicmicro.com/documentation).
+For complete documentation of all commands and protocols, please refer to the [official Basicmicro documentation](https://www.basicmicro.com/).
 
 ## Troubleshooting
 
