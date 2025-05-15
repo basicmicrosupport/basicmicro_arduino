@@ -215,8 +215,8 @@ class Basicmicro : public Stream
 			GETDOUTS = 138, 			//MCP only
 			SETPRIORITY = 139, 			//MCP only
 			GETPRIORITY = 140, 			//MCP only
-			SETADDRESSEDMIXED = 141, 	//MCP only
-			GETADDRESSEDMIXED = 142,	//MCP only
+			SETADDRESSMIXED = 141,		//MCP only
+			GETADDRESSMIXED = 142,		//MCP only
 			SETSIGNAL = 143, 			//MCP only
 			GETSIGNALS = 144, 			//MCP only
 			SETSTREAM = 145, 			//MCP only
@@ -406,9 +406,9 @@ public:
 	bool SetTimeout(uint8_t address, float timeout);
 	bool GetTimeout(uint8_t address, float &timeout);
 	
-	bool SetM1DefaultSpeed(uint8_t address, uint32_t speed);
-	bool SetM2DefaultSpeed(uint8_t address, uint32_t speed);
-	bool GetDefaultSpeeds(uint8_t address, uint32_t &speed1, uint32_t &speed2);
+	bool SetM1DefaultSpeed(uint8_t address, uint16_t speed);
+	bool SetM2DefaultSpeed(uint8_t address, uint16_t speed);
+	bool GetDefaultSpeeds(uint8_t address, uint16_t &speed1, uint16_t &speed2);
 
 	bool GetStatus(uint8_t address, uint32_t &tick, uint32_t &state, uint16_t &temp1, uint16_t &temp2, 
 				  uint16_t &mainBattVoltage, uint16_t &logicBattVoltage, 
@@ -526,9 +526,10 @@ private:
 
 	void write_address_cmd(uint8_t address,uint8_t cmd);
 
-    void _writeword(uint16_t val);
+	void _write(uint8_t val);
+	void _writeword(uint16_t val);
     void _writelong(uint32_t val);
-    bool _writechecksum();
+    bool _writechecksum(void);
 	
     bool ReadByte(uint8_t &value);
     bool ReadWord(uint16_t &value);

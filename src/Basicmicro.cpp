@@ -156,6 +156,32 @@ void Basicmicro::flush()
 #endif
 }
 
+void Basicmicro::_write(uint8_t data)
+{
+	crc_update(data);
+	write(data);
+}
+
+void Basicmicro::_writeword(uint16_t data)
+{
+	_write(data>>8);
+	_write(data);
+}
+
+void Basicmicro::_writelong(uint32_t data)
+{
+	_writeword(data>>16);
+	_writeword(data&0xFFFF);
+}
+
+bool Basicmicro::_writechecksum(void)
+{
+	_writeword(crc_get());
+	if(read(timeout)>=0)	//-1 indicates read failed.
+		return true;
+	return false;
+}
+
 /**
  * @brief Read data from serial with timeout
  * 
@@ -221,19 +247,20 @@ bool Basicmicro::ReadByte(uint8_t &value)
  */
 bool Basicmicro::ReadWord(uint16_t &value)
 {
-    int16_t data;
+    uint8_t data;
     uint16_t val = 0;
     
-    data = read(timeout);
-    if(data == -1) return false;
-    crc_update(data);
-    val = (uint16_t)data << 8;
-    
-    data = read(timeout);
-    if(data == -1) return false;
-    crc_update(data);
-    val |= (uint16_t)data;
-    
+    if(ReadByte(data)){
+		val=data<<8;
+		if(ReadByte(data)){
+			val|=data;
+		}
+		else 
+			return false;
+	}
+	else 
+		return false;
+	
     value = val;
     return true;
 }
@@ -248,29 +275,21 @@ bool Basicmicro::ReadWord(uint16_t &value)
  */
 bool Basicmicro::ReadLong(uint32_t &value)
 {
-    int16_t data;
+    uint16_t data;
     uint32_t val = 0;
     
-    data = read(timeout);
-    if(data == -1) return false;
-    crc_update(data);
-    val = (uint32_t)data << 24;
-    
-    data = read(timeout);
-    if(data == -1) return false;
-    crc_update(data);
-    val |= (uint32_t)data << 16;
-    
-    data = read(timeout);
-    if(data == -1) return false;
-    crc_update(data);
-    val |= (uint32_t)data << 8;
-    
-    data = read(timeout);
-    if(data == -1) return false;
-    crc_update(data);
-    val |= (uint32_t)data;
-    
+	if(ReadWord(data)){
+		val=data;
+		val<<=16;
+		if(ReadWord(data)){
+			val|=(data&0xFFFF);
+		}
+		else
+			return false;
+	}
+	else
+		return false;
+	
     value = val;
     return true;
 }
@@ -362,14 +381,11 @@ bool Basicmicro::write_n(uint8_t cnt, ... )
 		va_start( marker, cnt );     /* Initialize variable arguments. */
 		for(uint8_t index=0;index<cnt;index++){
 			uint8_t data = va_arg(marker, int);
-			crc_update(data);
-			write(data);
+			_write(data);
 		}
 		va_end( marker );              /* Reset variable arguments.      */
-		uint16_t crc = crc_get();
-		write(crc>>8);
-		write(crc);
-		if(read(timeout)==0xFF)
+
+		if(_writechecksum())
 			return true;
 	}while(trys--);
 	return false;
@@ -387,10 +403,8 @@ void Basicmicro::write_address_cmd(uint8_t address,uint8_t cmd)
 {
 	clear();	
 	crc_clear();
-	write(address);
-	crc_update(address);
-	write(cmd);
-	crc_update(cmd);
+	_write(address);
+	_write(cmd);
 }
 
 /**
@@ -418,59 +432,19 @@ bool Basicmicro::read_n(uint8_t cnt,uint8_t address,uint8_t cmd,...)
 		va_start( marker, cmd );     /* Initialize variable arguments. */
 		for(uint8_t index=0;index<cnt;index++){
 			uint32_t *ptr = va_arg(marker, uint32_t *);
-
-			if(data!=-1){
-				data = read(timeout);
-				crc_update(data);
-				value=(uint32_t)data<<24;
-			}
-			else{
+			if(!ReadLong(value)){
+				data = -1;
 				break;
 			}
-			
-			if(data!=-1){
-				data = read(timeout);
-				crc_update(data);
-				value|=(uint32_t)data<<16;
-			}
-			else{
-				break;
-			}
-
-			if(data!=-1){
-				data = read(timeout);
-				crc_update(data);
-				value|=(uint32_t)data<<8;
-			}
-			else{
-				break;
-			}
-
-			if(data!=-1){
-				data = read(timeout);
-				crc_update(data);
-				value|=(uint32_t)data;
-			}
-			else{
-				break;
-			}
-
 			*ptr = value;
 		}
 		va_end( marker );              /* Reset variable arguments.      */
 
-		if(data!=-1){
-			uint16_t ccrc;
-			data = read(timeout);
-			if(data!=-1){
-				ccrc = data << 8;
-				data = read(timeout);
-				if(data!=-1){
-					ccrc |= data;
-					return crc_get()==ccrc;
-				}
-			}
-		}
+		uint16_t ccrc;
+        if(!ReadWord(ccrc)) continue;        
+        if(crc_get() == ccrc) {
+            return true;
+        }
 	}while(trys--);
 
 	return false;
@@ -501,42 +475,21 @@ bool Basicmicro::read_n_words(uint8_t cnt,uint8_t address,uint8_t cmd,...)
 		va_start( marker, cmd );     /* Initialize variable arguments. */
 		for(uint8_t index=0;index<cnt;index++){
 			uint32_t *ptr = va_arg(marker, uint32_t *);
-			uint32_t value=0;
+			uint16_t value=0;
 
-			if(data!=-1){
-				data = read(timeout);
-				crc_update(data);
-				value|=(uint16_t)data<<8;
-			}
-			else{
+			if(!ReadWord(value)){
+				data = -1;
 				break;
-			}
-
-			if(data!=-1){
-				data = read(timeout);
-				crc_update(data);
-				value|=(uint16_t)data;
-			}
-			else{
-				break;
-			}
-
+			}			
 			*ptr = value;
 		}
 		va_end( marker );              /* Reset variable arguments.      */
 
-		if(data!=-1){
-			uint16_t ccrc;
-			data = read(timeout);
-			if(data!=-1){
-				ccrc = data << 8;
-				data = read(timeout);
-				if(data!=-1){
-					ccrc |= data;
-					return crc_get()==ccrc;
-				}
-			}
-		}
+		uint16_t ccrc;
+        if(!ReadWord(ccrc)) continue;        
+        if(crc_get() == ccrc) {
+            return true;
+        }
 	}while(trys--);
 
 	return false;
@@ -567,33 +520,20 @@ bool Basicmicro::read_n_bytes(uint8_t cnt, uint8_t address, uint8_t cmd, ...)
         va_start(marker, cmd);     /* Initialize variable arguments. */
         for (uint8_t index = 0; index < cnt; index++) {
             uint8_t *ptr = va_arg(marker, uint8_t *);
+			uint8_t value=0;
             
-            // Read a single byte
-            if (data != -1) {
-                data = read(timeout);
-                if (data != -1) {
-                    crc_update(data);
-                    *ptr = data;
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
+			if(!ReadByte(value)){
+				data = -1;
+				break;
+			}
+            *ptr = value;
         }
         va_end(marker);              /* Reset variable arguments. */
 
-        if (data != -1) {
-            uint16_t ccrc;
-            data = read(timeout);
-            if (data != -1) {
-                ccrc = data << 8;
-                data = read(timeout);
-                if (data != -1) {
-                    ccrc |= data;
-                    return crc_get() == ccrc;
-                }
-            }
+		uint16_t ccrc;
+        if(!ReadWord(ccrc)) continue;        
+        if(crc_get() == ccrc) {
+            return true;
         }
     } while (trys--);
 
@@ -612,40 +552,11 @@ bool Basicmicro::read_n_bytes(uint8_t cnt, uint8_t address, uint8_t cmd, ...)
  */
 uint8_t Basicmicro::Read1(uint8_t address,uint8_t cmd,bool *valid)
 {
-	uint8_t crc;
-
+	uint8_t value = 0;
+	bool isvalid = read_n_bytes(1, address, cmd, &value);
 	if(valid)
-		*valid = false;
-	
-	uint8_t value=0;
-	uint8_t trys=MAXRETRY;
-	int16_t data;
-	do{
-		write_address_cmd(address,cmd);
-	
-		data = read(timeout);
-		crc_update(data);
-		value=data;
-
-		if(data!=-1){
-			uint16_t ccrc;
-			data = read(timeout);
-			if(data!=-1){
-				ccrc = data << 8;
-				data = read(timeout);
-				if(data!=-1){
-					ccrc |= data;
-					if(crc_get()==ccrc){
-						if(valid)
-							*valid = true;
-						return value;
-					}
-				}
-			}
-		}
-	}while(trys--);
-	
-	return 0;
+		*valid = isvalid;
+	return value;
 }
 
 /**
@@ -661,46 +572,11 @@ uint8_t Basicmicro::Read1(uint8_t address,uint8_t cmd,bool *valid)
  */
 uint16_t Basicmicro::Read2(uint8_t address,uint8_t cmd,bool *valid)
 {
-	uint8_t crc;
-
+	uint16_t value = 0;
+	bool isvalid = read_n_words(1, address, cmd, &value);
 	if(valid)
-		*valid = false;
-	
-	uint16_t value=0;
-	uint8_t trys=MAXRETRY;
-	int16_t data;
-	do{
-		write_address_cmd(address,cmd);
-	
-		data = read(timeout);
-		crc_update(data);
-		value=(uint16_t)data<<8;
-		
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
-			value|=(uint16_t)data;
-		}
-		
-		if(data!=-1){
-			uint16_t ccrc;
-			data = read(timeout);
-			if(data!=-1){
-				ccrc = data << 8;
-				data = read(timeout);
-				if(data!=-1){
-					ccrc |= data;
-					if(crc_get()==ccrc){
-						if(valid)
-							*valid = true;
-						return value;
-					}
-				}
-			}
-		}
-	}while(trys--);
-		
-	return 0;
+		*valid = isvalid;
+	return value;
 }
 
 /**
@@ -717,58 +593,11 @@ uint16_t Basicmicro::Read2(uint8_t address,uint8_t cmd,bool *valid)
  */
 uint32_t Basicmicro::Read4(uint8_t address, uint8_t cmd, bool *valid)
 {
-	uint8_t crc;
-	
+	uint32_t value = 0;
+	bool isvalid = read_n(1, address, cmd, &value);
 	if(valid)
-		*valid = false;
-	
-	uint32_t value=0;
-	uint8_t trys=MAXRETRY;
-	int16_t data;
-	do{
-		write_address_cmd(address,cmd);
-
-		data = read(timeout);
-		crc_update(data);
-		value=(uint32_t)data<<24;
-
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
-			value|=(uint32_t)data<<16;
-		}
-		
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
-			value|=(uint32_t)data<<8;
-		}
-
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
-			value|=(uint32_t)data;
-		}
-		
-		if(data!=-1){
-			uint16_t ccrc;
-			data = read(timeout);
-			if(data!=-1){
-				ccrc = data << 8;
-				data = read(timeout);
-				if(data!=-1){
-					ccrc |= data;
-					if(crc_get()==ccrc){
-						if(valid)
-							*valid = true;
-						return value;
-					}
-				}
-			}
-		}
-	}while(trys--);
-	
-	return 0;
+		*valid = isvalid;
+	return value;
 }
 
 /**
@@ -791,55 +620,26 @@ uint32_t Basicmicro::Read4_1(uint8_t address, uint8_t cmd, uint8_t *status, bool
 	
 	uint32_t value=0;
 	uint8_t trys=MAXRETRY;
-	int16_t data;
+	uint8_t data;
 	do{
 		write_address_cmd(address,cmd);
 
-		data = read(timeout);
-		crc_update(data);
-		value=(uint32_t)data<<24;
-
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
-			value|=(uint32_t)data<<16;
+		if(ReadLong(value)){
+			if(!ReadByte(data))
+				return 0;
 		}
-
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
-			value|=(uint32_t)data<<8;
-		}
-
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
-			value|=(uint32_t)data;
-		}
-	
-		if(data!=-1){
-			data = read(timeout);
-			crc_update(data);
+		else
+			return 0;
+						
+		uint16_t ccrc;
+        if(!ReadWord(ccrc)) continue;        
+        if(crc_get() == ccrc) {
 			if(status)
 				*status = data;
-		}
-				
-		if(data!=-1){
-			uint16_t ccrc;
-			data = read(timeout);
-			if(data!=-1){
-				ccrc = data << 8;
-				data = read(timeout);
-				if(data!=-1){
-					ccrc |= data;
-					if(crc_get()==ccrc){
-						if(valid)
-							*valid = true;
-						return value;
-					}
-				}
-			}
-		}
+			if(valid)
+				*valid = true;
+            return value;
+        }
 	}while(trys--);
 
 	return 0;
@@ -1123,35 +923,18 @@ bool Basicmicro::ReadVersion(uint8_t address,char *version)
 		return false;
 	
 	do{
-		clear();
-		crc_clear();
-		write(address);
-		crc_update(address);
-		write(GETVERSION);
-		crc_update(GETVERSION);
+		write_address_cmd(address,GETVERSION);
 	
 		uint8_t i;
 		for(i=0;i<48;i++){	//maximum version string length is 48 bytes including the null.
-			data=read(timeout);
-			if(data!=-1){
+			if(ReadByte(data)){
 				version[i] = data;
-				crc_update(version[i]);
 				if(version[i]==0){
 					uint16_t ccrc;
-					data = read(timeout);
-					if(data!=-1){
-						ccrc = data << 8;
-						data = read(timeout);
-						if(data!=-1){
-							ccrc |= data;
-							return crc_get()==ccrc;
-						}
-					}
+					if(ReadWord(ccrc))
+						return crc_get()==ccrc;
 					break;
 				}
-			}
-			else{
-				break;
 			}
 		}
 	}while(trys--);
@@ -2201,15 +1984,8 @@ bool Basicmicro::GetCtrlSettings(uint8_t address,
         write_address_cmd(address, GETCTRLSETTINGS);
         
         // Read Motor 1 deadband settings (8-bit values)
-        int16_t data = read(timeout);
-        if (data == -1) continue;
-        crc_update(data);
-        minDBM1 = data;
-        
-        data = read(timeout);
-        if (data == -1) continue;
-        crc_update(data);
-        maxDBM1 = data;
+		if(!ReadByte(minDBM1)) continue;		
+		if(!ReadByte(maxDBM1)) continue;
         
         // Read all 16-bit values using ReadWord
         if (!ReadWord(minLimitsM1)) continue;
@@ -2219,15 +1995,8 @@ bool Basicmicro::GetCtrlSettings(uint8_t address,
         if (!ReadWord(maxM1)) continue;
         
         // Read Motor 2 deadband settings (8-bit values)
-        data = read(timeout);
-        if (data == -1) continue;
-        crc_update(data);
-        minDBM2 = data;
-        
-        data = read(timeout);
-        if (data == -1) continue;
-        crc_update(data);
-        maxDBM2 = data;
+		if(!ReadByte(minDBM2)) continue;		
+		if(!ReadByte(maxDBM2)) continue;
         
         // Read Motor 2 16-bit values using ReadWord
         if (!ReadWord(minLimitsM2)) continue;
@@ -2238,8 +2007,7 @@ bool Basicmicro::GetCtrlSettings(uint8_t address,
         
         // Verify CRC
         uint16_t ccrc;
-        if (!ReadWord(ccrc)) continue;
-        
+        if (!ReadWord(ccrc)) continue;       
         if (crc_get() == ccrc) {
             return true;
         }
@@ -2664,9 +2432,9 @@ bool Basicmicro::GetTimeout(uint8_t address, float &timeout)
  * @param speed Default speed in encoder counts per second
  * @return true if successful, false otherwise
  */
-bool Basicmicro::SetM1DefaultSpeed(uint8_t address, uint32_t speed)
+bool Basicmicro::SetM1DefaultSpeed(uint8_t address, uint16_t speed)
 {
-    return write_n(6, address, SETM1DEFAULTSPEED, SetDWORDval(speed));
+    return write_n(4, address, SETM1DEFAULTSPEED, SetWORDval(speed));
 }
 
 /**
@@ -2679,9 +2447,9 @@ bool Basicmicro::SetM1DefaultSpeed(uint8_t address, uint32_t speed)
  * @param speed Default speed in encoder counts per second
  * @return true if successful, false otherwise
  */
-bool Basicmicro::SetM2DefaultSpeed(uint8_t address, uint32_t speed)
+bool Basicmicro::SetM2DefaultSpeed(uint8_t address, uint16_t speed)
 {
-    return write_n(6, address, SETM2DEFAULTSPEED, SetDWORDval(speed));
+    return write_n(4, address, SETM2DEFAULTSPEED, SetWORDval(speed));
 }
 
 /**
@@ -2695,9 +2463,9 @@ bool Basicmicro::SetM2DefaultSpeed(uint8_t address, uint32_t speed)
  * @param speed2 Variable to store Motor 2 default speed in encoder counts per second
  * @return true if successful, false otherwise
  */
-bool Basicmicro::GetDefaultSpeeds(uint8_t address, uint32_t &speed1, uint32_t &speed2)
+bool Basicmicro::GetDefaultSpeeds(uint8_t address, uint16_t &speed1, uint16_t &speed2)
 {
-    return read_n(2, address, GETDEFAULTSPEEDS, &speed1, &speed2);
+    return read_n_words(2, address, GETDEFAULTSPEEDS, &speed1, &speed2);
 }
 
 /**
@@ -2742,12 +2510,7 @@ bool Basicmicro::GetStatus(uint8_t address, uint32_t &tick, uint32_t &state,
     uint16_t rawPwm1, rawPwm2, rawCurrent1, rawCurrent2;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETSTATUS);
-        crc_update(GETSTATUS);
+		write_address_cmd(address,GETSTATUS);
         
         // Read all values using our utility functions
         if(!ReadLong(tick)) continue;
@@ -2783,8 +2546,7 @@ bool Basicmicro::GetStatus(uint8_t address, uint32_t &tick, uint32_t &state,
         
         // Verify CRC using the ReadWord utility function
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -2813,22 +2575,15 @@ bool Basicmicro::SetSerialNumber(uint8_t address, const char* serialNumber)
         length = 36;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(SETSERIALNUMBER);
-        crc_update(SETSERIALNUMBER);
+		write_address_cmd(address,SETSERIALNUMBER);
         
         // Write length byte
-        write(length);
-        crc_update(length);
+        _write(length);
         
         // Write serial number bytes
         for(uint8_t i = 0; i < 36; i++) {
             uint8_t c = (i < length) ? serialNumber[i] : 0; // Pad with zeros if shorter than 36
-            write(c);
-            crc_update(c);
+            _write(c);
         }
         
         // Write CRC and check for acknowledgment
@@ -2854,55 +2609,42 @@ bool Basicmicro::GetSerialNumber(uint8_t address, char* serialNumber)
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETSERIALNUMBER);
-        crc_update(GETSERIALNUMBER);
+		write_address_cmd(address,GETSERIALNUMBER);
         
         // Read length byte
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        uint8_t length = data;
+		uint8_t length;
+		if(!ReadByte(length)) continue;
         
         // Read 36 bytes for the serial number
         uint8_t buffer[36];
         bool readError = false;
         
         for(uint8_t i = 0; i < 36; i++) {
-            data = read(timeout);
-            if(data == -1) {
+			if(!ReadByte(buffer[i])){
                 readError = true;
-                break;
-            }
-            crc_update(data);
-            buffer[i] = data;
+				break;
+			}
         }
         
         if(readError) continue;
         
         // Verify CRC using the ReadWord utility function
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;       
         if(crc_get() == ccrc) {
             // Copy the active part of the serial number to the output buffer
             // and null-terminate it
             for(uint8_t i = 0; i < length; i++) {
                 serialNumber[i] = buffer[i];
             }
-            serialNumber[length] = 0;
-            
+            serialNumber[length] = 0;            
             return true;
         }
     } while(trys--);
     
     // Ensure null termination even on failure
     if(serialNumber)
-        serialNumber[0] = 0;
-    
+        serialNumber[0] = 0;    
     return false;
 }
 
@@ -2929,8 +2671,7 @@ bool Basicmicro::GetVolts(uint8_t address, uint16_t &mainBattVoltage, uint16_t &
         
         // Verify CRC
         uint16_t ccrc;
-        if (!ReadWord(ccrc)) continue;
-        
+        if (!ReadWord(ccrc)) continue;        
         if (crc_get() == ccrc) {
             return true;
         }
@@ -2961,8 +2702,7 @@ bool Basicmicro::GetTemps(uint8_t address, uint16_t &temp1, uint16_t &temp2)
         
         // Verify CRC
         uint16_t ccrc;
-        if (!ReadWord(ccrc)) continue;
-        
+        if (!ReadWord(ccrc)) continue;        
         if (crc_get() == ccrc) {
             return true;
         }
@@ -3090,12 +2830,7 @@ bool Basicmicro::GetSpeedErrors(uint8_t address, uint16_t &error1, uint16_t &err
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETSPEEDERRORS);
-        crc_update(GETSPEEDERRORS);
+		write_address_cmd(address,GETSPEEDERRORS);
         
         // Read error1 (16-bit)
         if(!ReadWord(error1)) continue;
@@ -3105,8 +2840,7 @@ bool Basicmicro::GetSpeedErrors(uint8_t address, uint16_t &error1, uint16_t &err
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -3161,12 +2895,7 @@ bool Basicmicro::GetPosErrors(uint8_t address, uint16_t &error1, uint16_t &error
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETPOSERRORS);
-        crc_update(GETPOSERRORS);
+		write_address_cmd(address,GETPOSERRORS);
         
         // Read error1 (16-bit)
         if(!ReadWord(error1)) continue;
@@ -3176,8 +2905,7 @@ bool Basicmicro::GetPosErrors(uint8_t address, uint16_t &error1, uint16_t &error
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -3505,30 +3233,18 @@ bool Basicmicro::GetDOUTS(uint8_t address, uint8_t &count, uint8_t *actions, uin
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETDOUTS);
-        crc_update(GETDOUTS);
+		write_address_cmd(address,GETDOUTS);
         
         // Read count
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        count = data;
+		if(!ReadByte(count)) continue;
         
         // Check if we have enough space in the provided array
         uint8_t readCount = (count <= maxActions) ? count : maxActions;
         
         // Read action values
+		uint8_t data;
         for(uint8_t i = 0; i < count; i++) {
-            data = read(timeout);
-            if(data == -1) {
-                break;
-            }
-            crc_update(data);
-            
+			if(!ReadByte(data)) break;           
             if(i < readCount) {
                 actions[i] = data;
             }
@@ -3536,8 +3252,7 @@ bool Basicmicro::GetDOUTS(uint8_t address, uint8_t &count, uint8_t *actions, uin
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -3590,7 +3305,7 @@ bool Basicmicro::GetPriority(uint8_t address, uint8_t &priority1, uint8_t &prior
  */
 bool Basicmicro::SetAddressMixed(uint8_t address, uint8_t newAddress, uint8_t enableMixing)
 {
-    return write_n(4, address, SETADDRESSEDMIXED, newAddress, enableMixing);
+    return write_n(4, address, SETADDRESSMIXED, newAddress, enableMixing);
 }
 
 /**
@@ -3608,28 +3323,15 @@ bool Basicmicro::GetAddressMixed(uint8_t address, uint8_t &newAddress, uint8_t &
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETADDRESSEDMIXED);
-        crc_update(GETADDRESSEDMIXED);
+		write_address_cmd(address,GETADDRESSMIXED);
         
         // Read values
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        newAddress = data;
-        
-        data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        mixingEnabled = data;
+		if(!ReadByte(newAddress)) continue;       
+		if(!ReadByte(mixingEnabled)) continue;
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -3673,32 +3375,22 @@ bool Basicmicro::SetSignal(uint8_t address, uint8_t index, uint8_t signalType, u
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(SETSIGNAL);
-        crc_update(SETSIGNAL);
+		write_address_cmd(address,SETSIGNAL);
         
         // Write index and type
-        write(index);
-        crc_update(index);
-        write(signalType);
-        crc_update(signalType);
+        _write(index);
+        _write(signalType);
         
         // Write mode and target
-        write(mode);
-        crc_update(mode);
-        write(target);
-        crc_update(target);
+        _write(mode);
+        _write(target);
         
         // Write min/max action (16-bit)
         _writeword(minAction);
         _writeword(maxAction);
         
         // Write lowpass
-        write(lowpass);
-        crc_update(lowpass);
+        _write(lowpass);
         
         // Write timeout (32-bit)
         _writelong(timeout);
@@ -3742,18 +3434,10 @@ bool Basicmicro::GetSignals(uint8_t address, uint8_t &count, SignalConfig *signa
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETSIGNALS);
-        crc_update(GETSIGNALS);
+		write_address_cmd(address,GETSIGNALS);
         
         // Read count
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        count = data;
+		if(!ReadByte(count)) continue;
         
         // Check if we have enough space in the provided array
         uint8_t readCount = (count <= maxSignals) ? count : maxSignals;
@@ -3764,31 +3448,22 @@ bool Basicmicro::GetSignals(uint8_t address, uint8_t &count, SignalConfig *signa
             SignalConfig config;
             
             // Read type
-            data = read(timeout);
-            if(data == -1) {
+			if(!ReadByte(config.type)){
                 readError = true;
-                break;
-            }
-            crc_update(data);
-            config.type = data;
+				break;
+			}
             
             // Read mode
-            data = read(timeout);
-            if(data == -1) {
+			if(!ReadByte(config.mode)){
                 readError = true;
                 break;
-            }
-            crc_update(data);
-            config.mode = data;
+			}
             
             // Read target
-            data = read(timeout);
-            if(data == -1) {
+			if(!ReadByte(config.target)){
                 readError = true;
                 break;
-            }
-            crc_update(data);
-            config.target = data;
+			}
             
             // Read minAction (16-bit)
             if(!ReadWord(config.minAction)) {
@@ -3803,13 +3478,10 @@ bool Basicmicro::GetSignals(uint8_t address, uint8_t &count, SignalConfig *signa
             }
             
             // Read lowpass
-            data = read(timeout);
-            if(data == -1) {
+			if(!ReadByte(config.lowpass)){
                 readError = true;
                 break;
-            }
-            crc_update(data);
-            config.lowpass = data;
+			}
             
             // Read timeout (32-bit)
             if(!ReadLong(config.timeout)) {
@@ -3864,8 +3536,7 @@ bool Basicmicro::GetSignals(uint8_t address, uint8_t &count, SignalConfig *signa
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -3891,18 +3562,11 @@ bool Basicmicro::SetStream(uint8_t address, uint8_t index, uint8_t streamType, u
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(SETSTREAM);
-        crc_update(SETSTREAM);
+		write_address_cmd(address,SETSTREAM);
         
         // Write index and type
-        write(index);
-        crc_update(index);
-        write(streamType);
-        crc_update(streamType);
+        _write(index);
+        _write(streamType);
         
         // Write baudrate and timeout (32-bit)
         _writelong(baudrate);
@@ -3933,18 +3597,10 @@ bool Basicmicro::GetStreams(uint8_t address, uint8_t &count, StreamConfig *strea
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETSTREAMS);
-        crc_update(GETSTREAMS);
+		write_address_cmd(address,GETSTREAMS);
         
         // Read count
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        count = data;
+		if(!ReadByte(count)) continue;
         
         // Check if we have enough space in the provided array
         uint8_t readCount = (count <= maxStreams) ? count : maxStreams;
@@ -3955,13 +3611,10 @@ bool Basicmicro::GetStreams(uint8_t address, uint8_t &count, StreamConfig *strea
             StreamConfig config;
             
             // Read type
-            data = read(timeout);
-            if(data == -1) {
+			if(!ReadByte(config.type)){
                 readError = true;
                 break;
-            }
-            crc_update(data);
-            config.type = data;
+			}
             
             // Read baudrate and timeout (32-bit)
             if(!ReadLong(config.baudrate) || !ReadLong(config.timeout)) {
@@ -3979,8 +3632,7 @@ bool Basicmicro::GetStreams(uint8_t address, uint8_t &count, StreamConfig *strea
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -4005,18 +3657,10 @@ bool Basicmicro::GetSignalsData(uint8_t address, uint8_t &count, SignalData *sig
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETSIGNALSDATA);
-        crc_update(GETSIGNALSDATA);
+		write_address_cmd(address,GETSIGNALSDATA);
         
         // Read count
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        count = data;
+		if(!ReadByte(count)) continue;
         
         // Check if we have enough space in the provided array
         uint8_t readCount = (count <= maxSignals) ? count : maxSignals;
@@ -4044,8 +3688,7 @@ bool Basicmicro::GetSignalsData(uint8_t address, uint8_t &count, SignalData *sig
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -4082,23 +3725,14 @@ bool Basicmicro::GetNodeID(uint8_t address, uint8_t &nodeID)
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETNODEID);
-        crc_update(GETNODEID);
+		write_address_cmd(address,GETNODEID);
         
         // Read node ID
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        nodeID = data;
+        if(!ReadByte(nodeID)) continue;
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -4148,29 +3782,19 @@ bool Basicmicro::GetPWMIdle(uint8_t address, float &idleDelay1, bool &idleMode1,
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETPWMIDLE);
-        crc_update(GETPWMIDLE);
+		write_address_cmd(address,GETPWMIDLE);
         
         // Read byte 1
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        uint8_t byte1 = data;
+		uint8_t byte1;
+		if(!ReadByte(byte1)) continue;
         
         // Read byte 2
-        data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        uint8_t byte2 = data;
+		uint8_t byte2;
+		if(!ReadByte(byte2)) continue;
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             // Extract delay values (lower 7 bits) and convert from tenths to seconds
             idleDelay1 = (byte1 & 0x7F) / 10.0f;
@@ -4201,23 +3825,14 @@ bool Basicmicro::CANBufferState(uint8_t address, uint8_t &count)
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(CANBUFFERSTATE);
-        crc_update(CANBUFFERSTATE);
+		write_address_cmd(address,CANBUFFERSTATE);
         
         // Read packet count
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        count = data;
+		if(!ReadByte(count)) continue;
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -4246,27 +3861,19 @@ bool Basicmicro::CANPutPacket(uint8_t address, uint16_t cobID, uint8_t rtr, uint
     if(length > 8) length = 8;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(CANPUTPACKET);
-        crc_update(CANPUTPACKET);
+		write_address_cmd(address,CANPUTPACKET);
         
         // Write CAN ID (16-bit)
         _writeword(cobID);
         
         // Write RTR flag and length
-        write(rtr);
-        crc_update(rtr);
-        write(length);
-        crc_update(length);
+        _write(rtr);
+        _write(length);
         
         // Write data bytes (up to 8)
         for(uint8_t i = 0; i < 8; i++) {
             uint8_t byteVal = (i < length) ? data[i] : 0; // Use 0 for padding if less than 8 bytes
-            write(byteVal);
-            crc_update(byteVal);
+            _write(byteVal);
         }
         
         // Write CRC and check for acknowledgment
@@ -4295,17 +3902,11 @@ bool Basicmicro::CANGetPacket(uint8_t address, uint16_t &cobID, uint8_t &rtr, ui
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(CANGETPACKET);
-        crc_update(CANGETPACKET);
+		write_address_cmd(address,CANGETPACKET);
         
         // Read packet status (should be 0xFF for valid packet)
-        int16_t val = read(timeout);
-        if(val == -1) continue;
-        crc_update(val);
+		uint8_t val;
+		if(!ReadByte(val)) continue;
         
         if(val != 0xFF) {
             // No valid packet available
@@ -4322,31 +3923,20 @@ bool Basicmicro::CANGetPacket(uint8_t address, uint16_t &cobID, uint8_t &rtr, ui
         if(!ReadWord(cobID)) continue;
         
         // Read RTR flag and length
-        val = read(timeout);
-        if(val == -1) continue;
-        crc_update(val);
-        rtr = val;
-        
-        val = read(timeout);
-        if(val == -1) continue;
-        crc_update(val);
-        length = val;
+		if(!ReadByte(rtr)) continue;
+		if(!ReadByte(length)) continue;
         
         // Validate length
         if(length > 8) length = 8;
         
         // Read data bytes (always 8 bytes, padded with zeros if needed)
         for(uint8_t i = 0; i < 8; i++) {
-            val = read(timeout);
-            if(val == -1) break;
-            crc_update(val);
-            data[i] = val;
+            if(!ReadByte(data[i])) break;
         }
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -4373,26 +3963,19 @@ bool Basicmicro::CANOpenWriteLocalDict(uint8_t address, uint16_t index, uint8_t 
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(CANOPENWRITELOCALDICT);
-        crc_update(CANOPENWRITELOCALDICT);
+		write_address_cmd(address,CANOPENWRITELOCALDICT);
         
         // Write index (16-bit)
         _writeword(index);
         
         // Write subindex
-        write(subindex);
-        crc_update(subindex);
+        _write(subindex);
         
         // Write value (32-bit)
         _writelong(value);
         
         // Write size
-        write(size);
-        crc_update(size);
+        _write(size);
         
         // Write CRC
         _writeword(crc_get());
@@ -4406,8 +3989,7 @@ bool Basicmicro::CANOpenWriteLocalDict(uint8_t address, uint16_t index, uint8_t 
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             result = tempResult;
             return true;
@@ -4436,19 +4018,13 @@ bool Basicmicro::CANOpenReadLocalDict(uint8_t address, uint16_t index, uint8_t s
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(CANOPENREADLOCALDICT);
-        crc_update(CANOPENREADLOCALDICT);
+		write_address_cmd(address,CANOPENREADLOCALDICT);
         
         // Write index (16-bit)
         _writeword(index);
         
         // Write subindex
-        write(subindex);
-        crc_update(subindex);
+        _write(subindex);
         
         // Write CRC
         _writeword(crc_get());
@@ -4457,38 +4033,23 @@ bool Basicmicro::CANOpenReadLocalDict(uint8_t address, uint16_t index, uint8_t s
         crc_clear();
         
         // Read the value, size, type and result
-        uint32_t tempValue, tempResult;
-        uint8_t tempSize, tempType;
-        
         // Read value (32-bit)
-        if(!ReadLong(tempValue)) continue;
+        if(!ReadLong(value)) continue;
         
         // Read size (8-bit)
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        tempSize = data;
+		if(!ReadByte(size)) continue;
         
         // Read type (8-bit)
-        data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        tempType = data;
+		if(!ReadByte(type)) continue;
         
         // Read result (32-bit)
-        if(!ReadLong(tempResult)) continue;
+        if(!ReadLong(result)) continue;
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
-        if(crc_get() == ccrc) {
-            value = tempValue;
-            size = tempSize;
-            type = tempType;
-            result = tempResult;
-            return true;
-        }
+        if(!ReadWord(ccrc)) continue;        
+        if(crc_get() == ccrc)
+			return true;
     } while(trys--);
     
     return false;
@@ -4542,23 +4103,14 @@ bool Basicmicro::GetEStopLock(uint8_t address, uint8_t &lockState)
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(GETESTOPLOCK);
-        crc_update(GETESTOPLOCK);
+		write_address_cmd(address,GETESTOPLOCK);
         
         // Read lock state
-        int16_t data = read(timeout);
-        if(data == -1) continue;
-        crc_update(data);
-        lockState = data;
+		if(!ReadByte(lockState)) continue;
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
@@ -4638,24 +4190,17 @@ bool Basicmicro::ReadEEPROM(uint8_t address, uint8_t eeAddress, uint16_t &value)
     uint8_t trys = MAXRETRY;
     
     do {
-        clear();
-        crc_clear();
-        write(address);
-        crc_update(address);
-        write(READEEPROM);
-        crc_update(READEEPROM);
+		write_address_cmd(address,READEEPROM);
         
         // Write EEPROM address
-        write(eeAddress);
-        crc_update(eeAddress);
+        _write(eeAddress);
         
         // Read value (16-bit)
         if(!ReadWord(value)) continue;
         
         // Verify CRC
         uint16_t ccrc;
-        if(!ReadWord(ccrc)) continue;
-        
+        if(!ReadWord(ccrc)) continue;        
         if(crc_get() == ccrc) {
             return true;
         }
